@@ -242,7 +242,9 @@ def visualize_panoptic_outputs(
             instances.cpu()
         ).float()
         boundaries_img_instances_gt = get_boundary_mask(instances.cpu().view(H, W))
-        colored_img_instance_gt[instances == 0, :] = rgb.cpu()[instances == 0, :]
+        colored_img_instance_gt[instances.cpu() == 0, :] = rgb.cpu()[
+            instances.cpu() == 0, :
+        ]
         img_instances_gt = colored_img_instance_gt.view(H, W, 3).permute(
             2, 0, 1
         ) * alpha + img_gt * (1 - alpha)
