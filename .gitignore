@@ -4,8 +4,9 @@ wandb/
 lightning_logs/
 runs/
 runs
-
+*.zip
 *.pyd
+*.ckpt
 
 # Editors
 .vscode/
