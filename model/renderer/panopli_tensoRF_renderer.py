@@ -36,7 +36,19 @@ from util.transforms import tr_comp, dot, trs_comp
 
 class TensoRFRenderer(nn.Module):
 
-    def __init__(self, bbox_aabb, grid_dim, stop_semantic_grad=True, semantic_weight_mode="none", step_ratio=0.5, distance_scale=25, raymarch_weight_thres=0.0001, alpha_mask_threshold=0.0075, parent_renderer_ref=None, instance_id=0):
+    def __init__(
+        self,
+        bbox_aabb,
+        grid_dim,
+        stop_semantic_grad=True,
+        semantic_weight_mode="none",
+        step_ratio=0.5,
+        distance_scale=25,
+        raymarch_weight_thres=0.0001,
+        alpha_mask_threshold=0.0075,
+        parent_renderer_ref=None,
+        instance_id=0,
+    ):
         super().__init__()
         self.register_buffer("bbox_aabb", bbox_aabb)
         self.register_buffer("grid_dim", torch.LongTensor(grid_dim))
@@ -58,7 +70,11 @@ class TensoRFRenderer(nn.Module):
         print(f"\n[{self.instance_id:02d}] aabb", self.bbox_aabb.view(-1))
         print(f"[{self.instance_id:02d}] grid size", grid_dim)
         box_extent = self.bbox_aabb[1] - self.bbox_aabb[0]
-        self.grid_dim.data = torch.tensor(grid_dim, device=self.bbox_aabb.device) if isinstance(grid_dim, tuple) else grid_dim
+        self.grid_dim.data = (
+            torch.tensor(grid_dim, device=self.bbox_aabb.device)
+            if isinstance(grid_dim, tuple)
+            else grid_dim
+        )
         self.inv_box_extent.data = 2.0 / box_extent
         self.units.data = box_extent / (self.grid_dim - 1 + 1e-3)
         print(f"[{self.instance_id:02d}] units: ", self.step_size)
@@ -76,15 +92,31 @@ class TensoRFRenderer(nn.Module):
         self.n_samples = int((box_diag / self.step_size).item()) + 1
 
     def forward(self, tensorf, rays, perturb, white_bg, is_train):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train)
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train
+        )
         viewdirs = rays[:, 3:6].view(-1, 1, 3).expand(xyz_sampled.shape)
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
-        midpoints = torch.cat(((z_vals[:, 1:] + z_vals[:, :-1]) / 2, z_vals[:, -2:-1] * torch.ones_like(z_vals[:, :1])), dim=-1)
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
+        midpoints = torch.cat(
+            (
+                (z_vals[:, 1:] + z_vals[:, :-1]) / 2,
+                z_vals[:, -2:-1] * torch.ones_like(z_vals[:, :1]),
+            ),
+            dim=-1,
+        )
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
         rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)
 
-        semantics = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        semantics = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
         # regfeats = torch.zeros((*xyz_sampled.shape[:2], 384), device=xyz_sampled.device)
 
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
@@ -97,18 +129,26 @@ class TensoRFRenderer(nn.Module):
         appearance_mask = weight > self.raymarch_weight_thres
 
         if appearance_mask.any():
-            appearance_features = tensorf.compute_appearance_feature(xyz_sampled[appearance_mask])
-            valid_rgbs = tensorf.render_appearance_mlp(viewdirs[appearance_mask], appearance_features)
+            appearance_features = tensorf.compute_appearance_feature(
+                xyz_sampled[appearance_mask]
+            )
+            valid_rgbs = tensorf.render_appearance_mlp(
+                viewdirs[appearance_mask], appearance_features
+            )
             rgb[appearance_mask] = valid_rgbs
 
-            semantic_features = tensorf.compute_semantic_feature(xyz_sampled[appearance_mask])
+            semantic_features = tensorf.compute_semantic_feature(
+                xyz_sampled[appearance_mask]
+            )
             valid_semantics = tensorf.render_semantic_mlp(None, semantic_features)
             semantics[appearance_mask] = valid_semantics
 
             # debug table
             # sigma[torch.logical_and(appearance_mask, semantics.argmax(-1) == 7)] += 0.1
 
-            instance_features = tensorf.compute_instance_feature(xyz_sampled[appearance_mask])
+            instance_features = tensorf.compute_instance_feature(
+                xyz_sampled[appearance_mask]
+            )
             instances[appearance_mask] = instance_features
 
             # if tensorf.use_feature_reg:
@@ -121,7 +161,9 @@ class TensoRFRenderer(nn.Module):
 
         w = weight[..., None]
         if self.semantic_weight_mode == "argmax":
-            w = torch.nn.functional.one_hot(w.argmax(dim=1)[:, 0], num_classes=w.shape[1]).unsqueeze(-1)
+            w = torch.nn.functional.one_hot(
+                w.argmax(dim=1)[:, 0], num_classes=w.shape[1]
+            ).unsqueeze(-1)
         if self.stop_semantic_grad:
             w = w.detach()
             semantic_map = torch.sum(w * semantics, -2)
@@ -139,7 +181,7 @@ class TensoRFRenderer(nn.Module):
             semantic_map = torch.log(semantic_map + 1e-8)
 
         if white_bg or (is_train and torch.rand((1,)) < 0.5):
-            rgb_map = rgb_map + (1. - opacity_map[..., None])
+            rgb_map = rgb_map + (1.0 - opacity_map[..., None])
 
         rgb_map = rgb_map.clamp(0, 1)
 
@@ -147,47 +189,76 @@ class TensoRFRenderer(nn.Module):
             depth_map = torch.sum(weight * z_vals, -1)
 
         regfeat_map = torch.zeros([1, 1], device=rgb_map.device)
-        return rgb_map, semantic_map, instance_map, depth_map, regfeat_map, dist_regularizer
+        return (
+            rgb_map,
+            semantic_map,
+            instance_map,
+            depth_map,
+            regfeat_map,
+            dist_regularizer,
+        )
 
     def forward_instance_feature(self, tensorf, rays, perturb, is_train):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train)
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train
+        )
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
 
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
 
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         with torch.no_grad():
             if mask_xyz.any():
                 sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
-            alpha, weight, bg_weight = self.raw_to_alpha(sigma, dists * self.distance_scale)
+            alpha, weight, bg_weight = self.raw_to_alpha(
+                sigma, dists * self.distance_scale
+            )
 
         appearance_mask = weight > self.raymarch_weight_thres
 
         if appearance_mask.any():
-            instance_features = tensorf.compute_instance_feature(xyz_sampled[appearance_mask])
+            instance_features = tensorf.compute_instance_feature(
+                xyz_sampled[appearance_mask]
+            )
             instances[appearance_mask] = instance_features
 
         instance_map = torch.sum(weight[..., None] * instances, -2)
         return instance_map
 
     def forward_segment_feature(self, tensorf, rays, perturb, is_train):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train)
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, perturb, is_train
+        )
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
 
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
-        segments = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
+        segments = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
 
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         with torch.no_grad():
             if mask_xyz.any():
                 sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
-            alpha, weight, bg_weight = self.raw_to_alpha(sigma, dists * self.distance_scale)
+            alpha, weight, bg_weight = self.raw_to_alpha(
+                sigma, dists * self.distance_scale
+            )
 
         appearance_mask = weight > self.raymarch_weight_thres
 
         if appearance_mask.any():
-            segment_features = tensorf.compute_semantic_feature(xyz_sampled[appearance_mask])
+            segment_features = tensorf.compute_semantic_feature(
+                xyz_sampled[appearance_mask]
+            )
             valid_semantics = tensorf.render_semantic_mlp(None, segment_features)
             segments[appearance_mask] = valid_semantics
 
@@ -203,22 +274,39 @@ class TensoRFRenderer(nn.Module):
 
     @torch.no_grad()
     def forward_delete(self, tensorf, rays, white_bg, bbox_deletion):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False)
-        _, delete_points = split_points_minimal(xyz_sampled.view(-1, 3), bbox_deletion["extent"].unsqueeze(0), bbox_deletion["position"].unsqueeze(0), bbox_deletion["orientation"].unsqueeze(0))
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False
+        )
+        _, delete_points = split_points_minimal(
+            xyz_sampled.view(-1, 3),
+            bbox_deletion["extent"].unsqueeze(0),
+            bbox_deletion["position"].unsqueeze(0),
+            bbox_deletion["orientation"].unsqueeze(0),
+        )
         delete_points = delete_points[0]
 
         rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)
-        semantics = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        semantics = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
         viewdirs = rays[:, 3:6].view(-1, 1, 3).expand(xyz_sampled.shape)
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         if mask_xyz.any():
             sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
 
         appearance_features = tensorf.compute_appearance_feature(xyz_sampled[mask_xyz])
-        valid_rgbs = tensorf.render_appearance_mlp(viewdirs[mask_xyz], appearance_features)
+        valid_rgbs = tensorf.render_appearance_mlp(
+            viewdirs[mask_xyz], appearance_features
+        )
         rgb[mask_xyz] = valid_rgbs
 
         semantic_features = tensorf.compute_semantic_feature(xyz_sampled[mask_xyz])
@@ -236,7 +324,9 @@ class TensoRFRenderer(nn.Module):
 
         w = weight[..., None]
         if self.semantic_weight_mode == "argmax":
-            w = torch.nn.functional.one_hot(w.argmax(dim=1)[:, 0], num_classes=w.shape[1]).unsqueeze(-1)
+            w = torch.nn.functional.one_hot(
+                w.argmax(dim=1)[:, 0], num_classes=w.shape[1]
+            ).unsqueeze(-1)
         if self.stop_semantic_grad:
             w = w.detach()
             semantic_map = torch.sum(w * semantics, -2)
@@ -250,7 +340,7 @@ class TensoRFRenderer(nn.Module):
             semantic_map = torch.log(semantic_map + 1e-8)
 
         if white_bg:
-            rgb_map = rgb_map + (1. - opacity_map[..., None])
+            rgb_map = rgb_map + (1.0 - opacity_map[..., None])
 
         rgb_map = rgb_map.clamp(0, 1)
 
@@ -261,23 +351,40 @@ class TensoRFRenderer(nn.Module):
 
     @torch.no_grad()
     def forward_extract(self, tensorf, rays, white_bg, bbox_extraction):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False)
-        _, extract_points = split_points_minimal(xyz_sampled.view(-1, 3), bbox_extraction["extent"].unsqueeze(0), bbox_extraction["position"].unsqueeze(0), bbox_extraction["orientation"].unsqueeze(0))
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False
+        )
+        _, extract_points = split_points_minimal(
+            xyz_sampled.view(-1, 3),
+            bbox_extraction["extent"].unsqueeze(0),
+            bbox_extraction["position"].unsqueeze(0),
+            bbox_extraction["orientation"].unsqueeze(0),
+        )
         extract_points = extract_points[0]
         delete_points = ~extract_points
 
         rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)
-        semantics = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        semantics = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
         viewdirs = rays[:, 3:6].view(-1, 1, 3).expand(xyz_sampled.shape)
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         if mask_xyz.any():
             sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
 
         appearance_features = tensorf.compute_appearance_feature(xyz_sampled[mask_xyz])
-        valid_rgbs = tensorf.render_appearance_mlp(viewdirs[mask_xyz], appearance_features)
+        valid_rgbs = tensorf.render_appearance_mlp(
+            viewdirs[mask_xyz], appearance_features
+        )
         rgb[mask_xyz] = valid_rgbs
 
         semantic_features = tensorf.compute_semantic_feature(xyz_sampled[mask_xyz])
@@ -295,7 +402,9 @@ class TensoRFRenderer(nn.Module):
 
         w = weight[..., None]
         if self.semantic_weight_mode == "argmax":
-            w = torch.nn.functional.one_hot(w.argmax(dim=1)[:, 0], num_classes=w.shape[1]).unsqueeze(-1)
+            w = torch.nn.functional.one_hot(
+                w.argmax(dim=1)[:, 0], num_classes=w.shape[1]
+            ).unsqueeze(-1)
         if self.stop_semantic_grad:
             w = w.detach()
             semantic_map = torch.sum(w * semantics, -2)
@@ -309,7 +418,7 @@ class TensoRFRenderer(nn.Module):
             semantic_map = torch.log(semantic_map + 1e-8)
 
         if white_bg:
-            rgb_map = rgb_map + (1. - opacity_map[..., None])
+            rgb_map = rgb_map + (1.0 - opacity_map[..., None])
 
         rgb_map = rgb_map.clamp(0, 1)
 
@@ -319,32 +428,56 @@ class TensoRFRenderer(nn.Module):
         return rgb_map, semantic_map, instance_map, depth_map
 
     @torch.no_grad()
-    def forward_duplicate(self, tensorf, rays, white_bg, bbox_instance, translation, rotation):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False)
-        _, manipulated_points = split_points_minimal(xyz_sampled.view(-1, 3), bbox_instance["extent"].unsqueeze(0), (rotation @ bbox_instance["position"] + translation).unsqueeze(0), (rotation @ bbox_instance["orientation"]).unsqueeze(0))
+    def forward_duplicate(
+        self, tensorf, rays, white_bg, bbox_instance, translation, rotation
+    ):
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False
+        )
+        _, manipulated_points = split_points_minimal(
+            xyz_sampled.view(-1, 3),
+            bbox_instance["extent"].unsqueeze(0),
+            (rotation @ bbox_instance["position"] + translation).unsqueeze(0),
+            (rotation @ bbox_instance["orientation"]).unsqueeze(0),
+        )
         manipulated_points = manipulated_points[0]
         orig_dim_xyz = xyz_sampled.shape
         xyz_sampled = xyz_sampled.reshape(-1, 3)
-        xyz_sampled[manipulated_points, :] = dot(torch.linalg.inv(tr_comp(translation, torch.eye(3).cuda())), xyz_sampled[manipulated_points, :])
+        xyz_sampled[manipulated_points, :] = dot(
+            torch.linalg.inv(tr_comp(translation, torch.eye(3).cuda())),
+            xyz_sampled[manipulated_points, :],
+        )
         xyz_sampled = xyz_sampled.reshape(orig_dim_xyz)
 
         rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)
-        semantics = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        semantics = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
         viewdirs = rays[:, 3:6].view(-1, 1, 3).expand(xyz_sampled.shape)
         orig_dim_viewdirs = viewdirs.shape
         viewdirs = viewdirs.reshape(-1, orig_dim_viewdirs[-1])
-        viewdirs[manipulated_points, :] = (torch.linalg.inv(rotation) @ viewdirs[manipulated_points, :].T).T
+        viewdirs[manipulated_points, :] = (
+            torch.linalg.inv(rotation) @ viewdirs[manipulated_points, :].T
+        ).T
         viewdirs = viewdirs.reshape(orig_dim_viewdirs)
 
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         if mask_xyz.any():
             sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
 
         appearance_features = tensorf.compute_appearance_feature(xyz_sampled[mask_xyz])
-        valid_rgbs = tensorf.render_appearance_mlp(viewdirs[mask_xyz], appearance_features)
+        valid_rgbs = tensorf.render_appearance_mlp(
+            viewdirs[mask_xyz], appearance_features
+        )
         rgb[mask_xyz] = valid_rgbs
 
         semantic_features = tensorf.compute_semantic_feature(xyz_sampled[mask_xyz])
@@ -360,7 +493,9 @@ class TensoRFRenderer(nn.Module):
 
         w = weight[..., None]
         if self.semantic_weight_mode == "argmax":
-            w = torch.nn.functional.one_hot(w.argmax(dim=1)[:, 0], num_classes=w.shape[1]).unsqueeze(-1)
+            w = torch.nn.functional.one_hot(
+                w.argmax(dim=1)[:, 0], num_classes=w.shape[1]
+            ).unsqueeze(-1)
         if self.stop_semantic_grad:
             w = w.detach()
             semantic_map = torch.sum(w * semantics, -2)
@@ -374,7 +509,7 @@ class TensoRFRenderer(nn.Module):
             semantic_map = torch.log(semantic_map + 1e-8)
 
         if white_bg:
-            rgb_map = rgb_map + (1. - opacity_map[..., None])
+            rgb_map = rgb_map + (1.0 - opacity_map[..., None])
 
         rgb_map = rgb_map.clamp(0, 1)
 
@@ -384,35 +519,68 @@ class TensoRFRenderer(nn.Module):
         return rgb_map, semantic_map, instance_map, depth_map
 
     @torch.no_grad()
-    def forward_manipulate(self, tensorf, rays, white_bg, bbox_instance, translation, rotation):
-        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False)
-        _, manipulated_points = split_points_minimal(xyz_sampled.view(-1, 3), bbox_instance["extent"].unsqueeze(0), (bbox_instance["position"] + translation).unsqueeze(0), (rotation @ bbox_instance["orientation"]).unsqueeze(0))
+    def forward_manipulate(
+        self, tensorf, rays, white_bg, bbox_instance, translation, rotation
+    ):
+        xyz_sampled, z_vals, mask_xyz = sample_points_in_box(
+            rays, self.bbox_aabb, self.n_samples, self.step_size, 0, False
+        )
+        _, manipulated_points = split_points_minimal(
+            xyz_sampled.view(-1, 3),
+            bbox_instance["extent"].unsqueeze(0),
+            (bbox_instance["position"] + translation).unsqueeze(0),
+            (rotation @ bbox_instance["orientation"]).unsqueeze(0),
+        )
         manipulated_points = manipulated_points[0]
-        _, bbox_points = split_points_minimal(xyz_sampled.view(-1, 3), bbox_instance["extent"].unsqueeze(0), bbox_instance["position"].unsqueeze(0), bbox_instance["orientation"].unsqueeze(0))
+        _, bbox_points = split_points_minimal(
+            xyz_sampled.view(-1, 3),
+            bbox_instance["extent"].unsqueeze(0),
+            bbox_instance["position"].unsqueeze(0),
+            bbox_instance["orientation"].unsqueeze(0),
+        )
         bbox_points = bbox_points[0]
         orig_dim_xyz = xyz_sampled.shape
         xyz_sampled = xyz_sampled.reshape(-1, 3)
 
-        xyz_sampled[manipulated_points, :] = (rotation @ (xyz_sampled[manipulated_points, :] - bbox_instance["position"]).T).T + bbox_instance["position"] - translation
+        xyz_sampled[manipulated_points, :] = (
+            (
+                rotation
+                @ (xyz_sampled[manipulated_points, :] - bbox_instance["position"]).T
+            ).T
+            + bbox_instance["position"]
+            - translation
+        )
         xyz_sampled = xyz_sampled.reshape(orig_dim_xyz)
 
         rgb = torch.zeros((*xyz_sampled.shape[:2], 3), device=xyz_sampled.device)
-        semantics = torch.zeros((*xyz_sampled.shape[:2], tensorf.num_semantic_classes), device=xyz_sampled.device)
-        instances = torch.zeros((*xyz_sampled.shape[:2], tensorf.dim_feature_instance), device=xyz_sampled.device)
+        semantics = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.num_semantic_classes),
+            device=xyz_sampled.device,
+        )
+        instances = torch.zeros(
+            (*xyz_sampled.shape[:2], tensorf.dim_feature_instance),
+            device=xyz_sampled.device,
+        )
         viewdirs = rays[:, 3:6].view(-1, 1, 3).expand(xyz_sampled.shape)
         orig_dim_viewdirs = viewdirs.shape
         viewdirs = viewdirs.reshape(-1, orig_dim_viewdirs[-1])
-        viewdirs[manipulated_points, :] = (torch.linalg.inv(rotation) @ viewdirs[manipulated_points, :].T).T
+        viewdirs[manipulated_points, :] = (
+            torch.linalg.inv(rotation) @ viewdirs[manipulated_points, :].T
+        ).T
         viewdirs = viewdirs.reshape(orig_dim_viewdirs)
 
-        dists = torch.cat((z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1)
+        dists = torch.cat(
+            (z_vals[:, 1:] - z_vals[:, :-1], torch.zeros_like(z_vals[:, :1])), dim=-1
+        )
         sigma = torch.zeros(xyz_sampled.shape[:-1], device=xyz_sampled.device)
         xyz_sampled = self.normalize_coordinates(xyz_sampled)
         if mask_xyz.any():
             sigma[mask_xyz] = tensorf.compute_density(xyz_sampled[mask_xyz])
 
         appearance_features = tensorf.compute_appearance_feature(xyz_sampled[mask_xyz])
-        valid_rgbs = tensorf.render_appearance_mlp(viewdirs[mask_xyz], appearance_features)
+        valid_rgbs = tensorf.render_appearance_mlp(
+            viewdirs[mask_xyz], appearance_features
+        )
         rgb[mask_xyz] = valid_rgbs
 
         semantic_features = tensorf.compute_semantic_feature(xyz_sampled[mask_xyz])
@@ -421,7 +589,9 @@ class TensoRFRenderer(nn.Module):
 
         instances[mask_xyz] = tensorf.compute_instance_feature(xyz_sampled[mask_xyz])
 
-        sigma[torch.logical_and(bbox_points, ~manipulated_points).reshape(sigma.shape)] = 0
+        sigma[
+            torch.logical_and(bbox_points, ~manipulated_points).reshape(sigma.shape)
+        ] = 0
         alpha, weight, bg_weight = self.raw_to_alpha(sigma, dists * self.distance_scale)
 
         opacity_map = torch.sum(weight, -1)
@@ -429,7 +599,9 @@ class TensoRFRenderer(nn.Module):
 
         w = weight[..., None]
         if self.semantic_weight_mode == "argmax":
-            w = torch.nn.functional.one_hot(w.argmax(dim=1)[:, 0], num_classes=w.shape[1]).unsqueeze(-1)
+            w = torch.nn.functional.one_hot(
+                w.argmax(dim=1)[:, 0], num_classes=w.shape[1]
+            ).unsqueeze(-1)
         if self.stop_semantic_grad:
             w = w.detach()
             semantic_map = torch.sum(w * semantics, -2)
@@ -443,7 +615,7 @@ class TensoRFRenderer(nn.Module):
             semantic_map = torch.log(semantic_map + 1e-8)
 
         if white_bg:
-            rgb_map = rgb_map + (1. - opacity_map[..., None])
+            rgb_map = rgb_map + (1.0 - opacity_map[..., None])
 
         rgb_map = rgb_map.clamp(0, 1)
 
@@ -452,11 +624,16 @@ class TensoRFRenderer(nn.Module):
 
         return rgb_map, semantic_map, instance_map, depth_map
 
-
     @staticmethod
     def raw_to_alpha(sigma, dist):
-        alpha = 1. - torch.exp(-sigma * dist)
-        T = torch.cumprod(torch.cat([torch.ones(alpha.shape[0], 1).to(alpha.device), 1. - alpha + 1e-10], -1), -1)
+        alpha = 1.0 - torch.exp(-sigma * dist)
+        T = torch.cumprod(
+            torch.cat(
+                [torch.ones(alpha.shape[0], 1).to(alpha.device), 1.0 - alpha + 1e-10],
+                -1,
+            ),
+            -1,
+        )
         weights = alpha * T[:, :-1]
         return alpha, weights, T[:, -1:]
 
@@ -467,21 +644,33 @@ class TensoRFRenderer(nn.Module):
     def get_instance_clusters(self, tensorf, mode):
         alpha, dense_xyz = self.get_dense_alpha(tensorf)
         xyz_sampled = self.normalize_coordinates(dense_xyz)
-        labels = tensorf.compute_instance_feature(xyz_sampled.view(-1, 3)).reshape([xyz_sampled.shape[0], xyz_sampled.shape[1], xyz_sampled.shape[2], -1])
+        labels = tensorf.compute_instance_feature(xyz_sampled.view(-1, 3)).reshape(
+            [xyz_sampled.shape[0], xyz_sampled.shape[1], xyz_sampled.shape[2], -1]
+        )
         dense_xyz = dense_xyz.transpose(0, 2).contiguous()
-        labels = labels.transpose(0, 2).contiguous().view([xyz_sampled.shape[0] * xyz_sampled.shape[1] * xyz_sampled.shape[2], -1]).argmax(dim=1).int()
+        labels = (
+            labels.transpose(0, 2)
+            .contiguous()
+            .view(
+                [xyz_sampled.shape[0] * xyz_sampled.shape[1] * xyz_sampled.shape[2], -1]
+            )
+            .argmax(dim=1)
+            .int()
+        )
         alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()
         alpha[alpha >= self.alpha_mask_threshold] = 1
         alpha[alpha < self.alpha_mask_threshold] = 0
-        if mode == 'full':
-            max_samples = 2 ** 16
+        if mode == "full":
+            max_samples = 2**16
             valid_xyz = dense_xyz[alpha >= 0]
         else:
-            max_samples = 2 ** 18
+            max_samples = 2**18
             mask = alpha > 0.5
             valid_xyz = dense_xyz[mask]
             labels = labels[mask.view(-1)]
-        selected_indices = random.sample(list(range(valid_xyz.shape[0])), min(max_samples, valid_xyz.shape[0]))
+        selected_indices = random.sample(
+            list(range(valid_xyz.shape[0])), min(max_samples, valid_xyz.shape[0])
+        )
         valid_xyz = valid_xyz[selected_indices, :]
         valid_labels = labels[selected_indices]
         return valid_xyz, valid_labels
@@ -493,7 +682,9 @@ class TensoRFRenderer(nn.Module):
         alpha = alpha.clamp(0, 1).transpose(0, 2).contiguous()[None, None]
         total_voxels = self.grid_dim[0] * self.grid_dim[1] * self.grid_dim[2]
 
-        alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1).view(self.grid_dim.tolist()[::-1])
+        alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1).view(
+            self.grid_dim.tolist()[::-1]
+        )
         alpha[alpha >= self.alpha_mask_threshold] = 1
         alpha[alpha < self.alpha_mask_threshold] = 0
 
@@ -514,21 +705,31 @@ class TensoRFRenderer(nn.Module):
             xyz_max = torch.minimum(box_max, xyz_max_fl)
 
             if self.parent_renderer_ref is not None:
-                box_min, box_max = self.parent_renderer_ref.bbox_aabb[0], self.parent_renderer_ref.bbox_aabb[1]
+                box_min, box_max = (
+                    self.parent_renderer_ref.bbox_aabb[0],
+                    self.parent_renderer_ref.bbox_aabb[1],
+                )
                 xyz_min = torch.maximum(box_min, xyz_min)
                 xyz_max = torch.minimum(box_max, xyz_max)
 
             new_bbox_aabb = torch.stack((xyz_min, xyz_max))
 
             total = torch.sum(alpha)
-            print(f"[{self.instance_id:02d}] bbox: {xyz_min, xyz_max} alpha rest %%%f" % (total / total_voxels * 100))
+            print(
+                f"[{self.instance_id:02d}] bbox: {xyz_min, xyz_max} alpha rest %%%f"
+                % (total / total_voxels * 100)
+            )
             xyz_min, xyz_max = new_bbox_aabb
-            t_l, b_r = (xyz_min - self.bbox_aabb[0]) / self.units, (xyz_max - self.bbox_aabb[0]) / self.units
+            t_l, b_r = (xyz_min - self.bbox_aabb[0]) / self.units, (
+                xyz_max - self.bbox_aabb[0]
+            ) / self.units
             t_l, b_r = torch.round(torch.round(t_l)).long(), torch.round(b_r).long() + 1
             b_r = torch.stack([b_r, self.grid_dim]).amin(0)
             new_size = b_r - t_l
             if new_size[0] > 0 and new_size[1] > 0 and new_size[2] > 0:
-                print(f"[{self.instance_id:02d}] shrinking ... with grid_size {new_size}")
+                print(
+                    f"[{self.instance_id:02d}] shrinking ... with grid_size {new_size}"
+                )
                 tensorf.shrink(t_l, b_r)
                 self.bbox_aabb.data = new_bbox_aabb
                 self.update_step_size((new_size[0], new_size[1], new_size[2]))
@@ -537,40 +738,57 @@ class TensoRFRenderer(nn.Module):
 
     @torch.no_grad()
     def get_dense_alpha(self, tensorf):
-        samples = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, self.grid_dim[0]),
-            torch.linspace(0, 1, self.grid_dim[1]),
-            torch.linspace(0, 1, self.grid_dim[2]),
-            indexing='ij'
-        ), -1).to(tensorf.density_line[0].device)
+        samples = torch.stack(
+            torch.meshgrid(
+                torch.linspace(0, 1, self.grid_dim[0]),
+                torch.linspace(0, 1, self.grid_dim[1]),
+                torch.linspace(0, 1, self.grid_dim[2]),
+                indexing="ij",
+            ),
+            -1,
+        ).to(tensorf.density_line[0].device)
         dense_xyz = self.bbox_aabb[0] * (1 - samples) + self.bbox_aabb[1] * samples
         alpha = torch.zeros_like(dense_xyz[..., 0])
         for i in range(self.grid_dim[0]):
-            alpha[i] = self.compute_alpha(tensorf, dense_xyz[i].view(-1, 3), self.step_size).view((self.grid_dim[1], self.grid_dim[2]))
+            alpha[i] = self.compute_alpha(
+                tensorf, dense_xyz[i].view(-1, 3), self.step_size
+            ).view((self.grid_dim[1], self.grid_dim[2]))
         return alpha, dense_xyz
 
     def compute_sigma(self, tensorf, xyz_locs):
         xyz_sampled = self.normalize_coordinates(xyz_locs)
-        sigma = tensorf.compute_density(xyz_sampled.view(-1, 3)).reshape(xyz_locs.shape[:-1])
+        sigma = tensorf.compute_density(xyz_sampled.view(-1, 3)).reshape(
+            xyz_locs.shape[:-1]
+        )
         return sigma
 
     @torch.no_grad()
     def get_dense_sigma(self, tensorf, upsample=1):
-        samples = torch.stack(torch.meshgrid(
-            torch.linspace(0, 1, self.grid_dim[0] * upsample, device="cpu"),
-            torch.linspace(0, 1, self.grid_dim[1] * upsample, device="cpu"),
-            torch.linspace(0, 1, self.grid_dim[2] * upsample, device="cpu"),
-            indexing='ij'
-        ), -1)
+        samples = torch.stack(
+            torch.meshgrid(
+                torch.linspace(0, 1, self.grid_dim[0] * upsample, device="cpu"),
+                torch.linspace(0, 1, self.grid_dim[1] * upsample, device="cpu"),
+                torch.linspace(0, 1, self.grid_dim[2] * upsample, device="cpu"),
+                indexing="ij",
+            ),
+            -1,
+        )
         sigma = torch.zeros_like(samples[..., 0]).to(self.bbox_aabb.device)
         for i in tqdm(range(self.grid_dim[0] * upsample)):
-            dense_xyz = self.bbox_aabb[0].cpu() * (1 - samples[i]) + self.bbox_aabb[1].cpu() * samples[i]
-            sigma[i] = self.compute_sigma(tensorf, dense_xyz.view(-1, 3).to(self.bbox_aabb.device)).view((self.grid_dim[1] * upsample, self.grid_dim[2] * upsample))
+            dense_xyz = (
+                self.bbox_aabb[0].cpu() * (1 - samples[i])
+                + self.bbox_aabb[1].cpu() * samples[i]
+            )
+            sigma[i] = self.compute_sigma(
+                tensorf, dense_xyz.view(-1, 3).to(self.bbox_aabb.device)
+            ).view((self.grid_dim[1] * upsample, self.grid_dim[2] * upsample))
         return sigma
 
     def compute_alpha(self, tensorf, xyz_locs, step_size):
         xyz_sampled = self.normalize_coordinates(xyz_locs)
-        sigma = tensorf.compute_density(xyz_sampled.view(-1, 3)).reshape(xyz_locs.shape[:-1])
+        sigma = tensorf.compute_density(xyz_sampled.view(-1, 3)).reshape(
+            xyz_locs.shape[:-1]
+        )
         alpha = 1 - torch.exp(-sigma * step_size).view(xyz_locs.shape[:-1])
         return alpha
 
@@ -595,23 +813,41 @@ class TensoRFRenderer(nn.Module):
 
     def export_instance_clusters(self, tensorf, output_directory):
         color_manager = DistinctColors()
-        c_xyz, c_label = self.get_instance_clusters(tensorf, mode='alpha')
+        c_xyz, c_label = self.get_instance_clusters(tensorf, mode="alpha")
         colors = color_manager.apply_colors_fast_torch(c_label.cpu().long())
-        visualize_points(c_xyz.cpu().numpy(), output_directory / f"alpha.obj", colors=colors.numpy())
-        c_xyz, c_label = self.get_instance_clusters(tensorf, mode='full')
+        visualize_points(
+            c_xyz.cpu().numpy(), output_directory / f"alpha.obj", colors=colors.numpy()
+        )
+        c_xyz, c_label = self.get_instance_clusters(tensorf, mode="full")
         colors = color_manager.apply_colors_fast_torch(c_label.cpu().long())
-        visualize_points(c_xyz.cpu().numpy(), output_directory / f"full.obj", colors=colors.numpy())
+        visualize_points(
+            c_xyz.cpu().numpy(), output_directory / f"full.obj", colors=colors.numpy()
+        )
 
 
 def split_points_minimal(xyz, extents, positions, orientations):
     split_xyz = []
     point_flags = []
     for i in range(extents.shape[0]):
-        inverse_transform = torch.linalg.inv(trs_comp(positions[i], orientations[i], torch.ones([1], device=xyz.device)))
-        inverse_transformed_xyz = (inverse_transform @ torch.cat([xyz, torch.ones([xyz.shape[0], 1], device=xyz.device)], 1).T).T[:, :3]
-        t0 = torch.logical_and(inverse_transformed_xyz[:, 0] <= extents[i, 0] / 2, inverse_transformed_xyz[:, 0] >= -extents[i, 0] / 2)
-        t1 = torch.logical_and(inverse_transformed_xyz[:, 1] <= extents[i, 1] / 2, inverse_transformed_xyz[:, 1] >= -extents[i, 1] / 2)
-        t2 = torch.logical_and(inverse_transformed_xyz[:, 2] <= extents[i, 2] / 2, inverse_transformed_xyz[:, 2] >= -extents[i, 2] / 2)
+        inverse_transform = torch.linalg.inv(
+            trs_comp(positions[i], orientations[i], torch.ones([1], device=xyz.device))
+        )
+        inverse_transformed_xyz = (
+            inverse_transform
+            @ torch.cat([xyz, torch.ones([xyz.shape[0], 1], device=xyz.device)], 1).T
+        ).T[:, :3]
+        t0 = torch.logical_and(
+            inverse_transformed_xyz[:, 0] <= extents[i, 0] / 2,
+            inverse_transformed_xyz[:, 0] >= -extents[i, 0] / 2,
+        )
+        t1 = torch.logical_and(
+            inverse_transformed_xyz[:, 1] <= extents[i, 1] / 2,
+            inverse_transformed_xyz[:, 1] >= -extents[i, 1] / 2,
+        )
+        t2 = torch.logical_and(
+            inverse_transformed_xyz[:, 2] <= extents[i, 2] / 2,
+            inverse_transformed_xyz[:, 2] >= -extents[i, 2] / 2,
+        )
         selection = torch.logical_and(torch.logical_and(t0, t1), t2)
         point_flags.append(selection)
         split_xyz.append(xyz[selection, :])
@@ -630,7 +866,7 @@ def sample_points_in_box(rays, bbox_aabb, n_samples, step_size, perturb, is_trai
         rng = rng.repeat(rays_d.shape[-2], 1)
         rng = rng + perturb * torch.rand_like(rng[:, [0]])
     step = step_size * rng.to(rays_o.device)
-    interpx = (t_min[..., None] + step)
+    interpx = t_min[..., None] + step
 
     rays_pts = rays_o[..., None, :] + rays_d[..., None, :] * interpx[..., None]
     mask_outbbox = ((bbox_aabb[0] > rays_pts) | (rays_pts > bbox_aabb[1])).any(dim=-1)
