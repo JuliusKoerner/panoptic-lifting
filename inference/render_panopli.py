@@ -9,6 +9,9 @@ from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
 import numpy as np
+
+sys.path.append(str(Path(__file__).parents[1]))
+print(sys.path)
 from dataset import PanopLiDataset, create_segmentation_data_panopli
 from model.radiance_field.tensoRF import TensorVMSplit
 from model.renderer.panopli_tensoRF_renderer import TensoRFRenderer
